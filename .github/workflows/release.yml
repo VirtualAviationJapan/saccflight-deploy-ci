@@ -118,9 +118,9 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: vpm-repo
-          commit-message: "add: URC-Redux v${{ needs.create-release.outputs.version }} packages"
-          title: "Update URC-Redux packages to v${{ needs.create-release.outputs.version }}"
-          body: This PR updates the URC-Redux packages to version v${{ needs.create-release.outputs.version }}.
-          branch: "update-urc-redux-packages-${{ needs.create-release.outputs.version }}"
+          commit-message: "add: SaccFlightAndVehicles v${{ needs.create-release.outputs.version }} packages"
+          title: "Update SaccFlightAndVehicles packages to v${{ needs.create-release.outputs.version }}"
+          body: This PR updates the SaccFlightAndVehicles packages to version v${{ needs.create-release.outputs.version }}.
+          branch: "update-sacc-flight-and-vehicles-packages-${{ needs.create-release.outputs.version }}"
           base: "master"
           delete-branch: 'true'
