@@ -69,7 +69,7 @@ jobs:
           
             echo "-> Setting package.json for '${package_name}' to '${json_file}'"
             download_url="${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ steps.set-version.outputs.version }}/${package_name}-${{ steps.set-version.outputs.version }}.zip"
-            jq --arg url "${download_url}" '.url = $url' "${json_file}" > "${json_file}"
+            jq --arg url "${download_url}" '.url = $url' "${package_dir}/package.json" > "${json_file}"
             cat "${json_file}"
           done
       - name: Check Package Zip
