@@ -113,10 +113,12 @@ def main():
         else:
             logger.success("no newer releases.")
 
+    issue_title = "Submodule Update Check"
+    logger.info(f"Creating/updating issue: {issue_title}")
     issue_body = "## Submodule Update List\n\n" + "\n".join(
         f"- **{sm.path}**: {sm.url}\n  - current: {sm.hash}\n  - newer releases:\n    " + "\n    ".join(
-            f"- {r.tag_name} ({r.commit_hash}) (published at {r.published_at})" for r in get_newer_releases(sm, g)
-        ) if get_newer_releases(sm, g) else "- no newer releases."
+            f"- {r.tag_name} ({r.commit_hash}) (published at {r.published_at})" for r in newer_releases
+        ) if newer_releases else "- no newer releases."
         for sm in submodules()
     )
     logger.info(issue_body)
