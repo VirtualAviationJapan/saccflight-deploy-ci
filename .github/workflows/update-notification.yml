@@ -1,8 +1,17 @@
 name: Submodule Update Notification
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
   schedule:
     - cron: '0 0 * * 6'
+  
 
 permissions:
   contents: read
