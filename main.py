@@ -1,13 +1,16 @@
 from dataclasses import dataclass
 import datetime
+import os
 import re
 import subprocess
 from pathlib import Path
 from github import Github
+from github import Auth
 from loguru import logger
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 GITMODULES = ROOT / ".gitmodules"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 @dataclass
 class Submodule:
@@ -67,7 +70,10 @@ def submodules():
 
 
 def main():
-    g = Github()
+    auth = Auth.Token(GITHUB_TOKEN) if GITHUB_TOKEN else None
+    if auth is None:
+        logger.warning("GITHUB_TOKEN not set, API rate limit may apply.")
+    g = Github(auth=auth)
 
     for sm in submodules():
         logger.info(f"Checking {sm.path} ({sm.url})...")

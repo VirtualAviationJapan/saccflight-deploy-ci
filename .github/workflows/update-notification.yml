@@ -1,0 +1,23 @@
+name: Submodule Update Notification
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 6'
+
+permissions:
+  contents: read
+  issues: write 
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v7
+      - name: Check for update and create issue
+        run: uv run main.py
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
