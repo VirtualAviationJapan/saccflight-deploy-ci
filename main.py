@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 GITMODULES = ROOT / ".gitmodules"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 THIS_REPO = os.getenv("THIS_REPO")  # e.g. "owner/repo"
+ASSIGNEES = os.getenv("ASSIGNEE")  # e.g. "username"
 
 
 @dataclass
@@ -94,6 +95,17 @@ def get_newer_releases(sm: Submodule, g: Github) -> list[Release]:
         return []
     return [r for r in origin_releases if r.published_at > current_release_published_at]
 
+
+def find_issue(repo: Repository, title: str, label: str, username: str):
+    issues = repo.get_issues(
+        state="open", labels=[label], sort="created", direction="desc"
+    )
+    for issue in issues:
+        if issue.title == title and issue.user.login == username:
+            return issue
+    return None
+
+
 def main():
     auth = Auth.Token(GITHUB_TOKEN) if GITHUB_TOKEN else None
     if auth is None:
@@ -113,15 +125,33 @@ def main():
         else:
             logger.success("no newer releases.")
 
+    # create or update GitHub issue with the results
+    this_repo: Repository = g.get_repo(THIS_REPO)
+
+    logger.info("Setting up GitHub issue...")
     issue_title = "Submodule Update Check"
-    logger.info(f"Creating/updating issue: {issue_title}")
+    labels = ["dependencies", "submodules"]
     issue_body = "## Submodule Update List\n\n" + "\n".join(
-        f"- **{sm.path}**: {sm.url}\n  - current: {sm.hash}\n  - newer releases:\n    " + "\n    ".join(
-            f"- {r.tag_name} ({r.commit_hash}) (published at {r.published_at})" for r in newer_releases
-        ) if newer_releases else "- no newer releases."
+        f"- **{sm.path}**: {sm.url}\n  - current: {sm.hash}\n  - newer releases:\n    "
+        + "\n    ".join(
+            f"- {r.tag_name} ({r.commit_hash}) (published at {r.published_at})"
+            for r in newer_releases
+        )
+        if newer_releases
+        else "- no newer releases."
         for sm in submodules()
     )
-    logger.info(issue_body)
+    existing_issue = find_issue(
+        this_repo, issue_title, "dependencies", "github-actions[bot]"
+    )
+    if existing_issue:
+        logger.info("Updating existing issue...")
+        existing_issue.edit(body=issue_body, assignees=ASSIGNEES)
+    else:
+        logger.info("Creating new issue...")
+        this_repo.create_issue(
+            title=issue_title, labels=labels, body=issue_body, assignees=ASSIGNEES
+        )
 
 
 if __name__ == "__main__":
