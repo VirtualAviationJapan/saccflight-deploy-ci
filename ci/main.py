@@ -1,6 +1,104 @@
+from dataclasses import dataclass
+import datetime
+import re
+import subprocess
 from pathlib import Path
+from github import Github
+from loguru import logger
+
+ROOT = Path(__file__).resolve().parents[1]
+GITMODULES = ROOT / ".gitmodules"
+
+@dataclass
+class Submodule:
+    name: str
+    path: str
+    url: str
+    hash: str
+
+@dataclass
+class Release:
+    tag_name: str
+    commit_hash: str
+    published_at: datetime
+
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
+
+
+def github_repo(url):
+    patterns = [
+        r"https://github\.com/([^/]+)/([^/.]+)(?:\.git)?",
+        r"git@github\.com:([^/]+)/([^/.]+)(?:\.git)?",
+        r"ssh://git@github\.com/([^/]+)/([^/.]+)(?:\.git)?",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, url)
+        if m:
+            return m.group(1), m.group(2)
+    raise RuntimeError(f"not a GitHub URL: {url}")
+
+
+def submodules():
+    out = git(
+        "config",
+        "--file",
+        str(GITMODULES),
+        "--get-regexp",
+        r"^submodule\..*\.path$",
+    )
+
+    for line in out.splitlines():
+        key, path = line.split(maxsplit=1)
+        name = key[len("submodule.") : -len(".path")]
+        url = git(
+            "config",
+            "--file",
+            str(GITMODULES),
+            "--get",
+            f"submodule.{name}.url",
+        )
+        yield Submodule(
+            name=name,
+            path=path,
+            url=url,
+            hash=git("ls-tree", "HEAD", path).split()[2],
+        )
+
+
+def main():
+    g = Github()
+
+    for sm in submodules():
+        logger.info(f"Checking {sm.path} ({sm.url})...")
+        logger.info(f"current: {sm.hash}")
+
+        owner, repo_name = github_repo(sm.url)
+        logger.info(f"fetching releases for {owner}/{repo_name}...")
+
+        origin_releases = [
+            Release(
+                tag_name=release.tag_name,
+                commit_hash=g.get_repo(f"{owner}/{repo_name}").get_git_ref(f"tags/{release.tag_name}").object.sha,
+                published_at=release.published_at,
+            )
+            for release in g.get_repo(f"{owner}/{repo_name}").get_releases()
+        ]
+        current_release_published_at = next(
+            (r.published_at for r in origin_releases if r.commit_hash == sm.hash),
+            None,
+        )
+        if current_release_published_at is None:
+            logger.error("current commit hash not found in releases.")
+            continue
+        newer_releases = [r for r in origin_releases if r.published_at > current_release_published_at]
+        if newer_releases:
+            logger.success("newer releases:")
+            for r in newer_releases:
+                logger.info(f"- {r.tag_name} (published at {r.published_at})")
+        else:
+            logger.success("no newer releases.")
+
 
 if __name__ == "__main__":
-    repo_dir = Path(__file__).parent().parent()
-    gitmodules = repo_dir / ".gitmodules"
-
+    main()
