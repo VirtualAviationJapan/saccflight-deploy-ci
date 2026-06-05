@@ -146,12 +146,20 @@ def main():
     )
     if existing_issue:
         logger.info("Updating existing issue...")
-        existing_issue.edit(body=issue_body, assignees=ASSIGNEES)
+        if ASSIGNEES is not None:
+            logger.info(f"Assigning issue to: {ASSIGNEES}")
+            existing_issue.edit(body=issue_body, assignees=ASSIGNEES)
+        else:
+            existing_issue.edit(body=issue_body)
     else:
         logger.info("Creating new issue...")
-        this_repo.create_issue(
-            title=issue_title, labels=labels, body=issue_body, assignees=ASSIGNEES
-        )
+        if ASSIGNEES is not None:
+            logger.info(f"Assigning issue to: {ASSIGNEES}")
+            this_repo.create_issue(
+                title=issue_title, labels=labels, body=issue_body, assignees=ASSIGNEES
+            )
+        else:
+            this_repo.create_issue(title=issue_title, labels=labels, body=issue_body)
 
 
 if __name__ == "__main__":
