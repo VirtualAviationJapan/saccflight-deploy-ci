@@ -1,18 +1,21 @@
-from dataclasses import dataclass
-import datetime
+import tempfile
+import json
+from collections.abc import Iterator
 import os
 import re
 import subprocess
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from github import Github
-from github import Auth, Repository
+import configparser
+
+from github import Auth, Github
+from github.Repository import Repository
 from loguru import logger
 
 ROOT = Path(__file__).resolve().parent
 GITMODULES = ROOT / ".gitmodules"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-THIS_REPO = os.getenv("THIS_REPO")  # e.g. "owner/repo"
-ASSIGNEES = os.getenv("ASSIGNEE")  # e.g. "username"
 
 
 @dataclass
@@ -21,17 +24,15 @@ class Submodule:
     path: str
     url: str
     hash: str
+    tag_name: str
 
 
 @dataclass
 class Release:
     tag_name: str
+    version: str
     commit_hash: str
     published_at: datetime
-
-
-def git(*args):
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
 
 def github_repo(url):
@@ -48,62 +49,67 @@ def github_repo(url):
 
 
 def submodules():
-    out = git(
-        "config",
-        "--file",
-        str(GITMODULES),
-        "--get-regexp",
-        r"^submodule\..*\.path$",
-    )
+    parser = configparser.ConfigParser()
+    parser.read(GITMODULES)
+    for section in parser.sections():
+        name = section.split('"')[1]
+        path = parser.get(section, "path")
+        submodule_path = ROOT / path
+        url = parser.get(section, "url")
+        hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=submodule_path, text=True
+        ).strip()
+        tag_name = subprocess.check_output(
+            ["git", "describe", "--tags"], cwd=submodule_path, text=True
+        ).strip()
+        yield Submodule(name=name, path=path, url=url, hash=hash, tag_name=tag_name)
 
-    for line in out.splitlines():
-        key, path = line.split(maxsplit=1)
-        name = key[len("submodule.") : -len(".path")]
-        url = git(
-            "config",
-            "--file",
-            str(GITMODULES),
-            "--get",
-            f"submodule.{name}.url",
+
+def get_version(repo: Repository, tag_hash: str):
+    # shallow clone the repo to a temporary directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        logger.info(f"cloning {repo.full_name} at {tag_hash}...")
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                tag_hash,
+                repo.clone_url,
+                tmpdir,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        yield Submodule(
-            name=name,
-            path=path,
-            url=url,
-            hash=git("ls-tree", "HEAD", path).split()[2],
-        )
+        # read version in package.json
+        with open(Path(tmpdir) / "package.json") as f:
+            package_json = json.load(f)
+            version = package_json["version"]
+            logger.debug(f"version in package.json: {version}")
+            return version
 
 
-def get_newer_releases(sm: Submodule, g: Github) -> list[Release]:
+def get_newer_releases(sm: Submodule, g: Github) -> Iterator[Release]:
     owner, repo_name = github_repo(sm.url)
-    origin_releases = [
-        Release(
-            tag_name=release.tag_name,
-            commit_hash=g.get_repo(f"{owner}/{repo_name}")
-            .get_git_ref(f"tags/{release.tag_name}")
-            .object.sha,
-            published_at=release.published_at,
-        )
-        for release in g.get_repo(f"{owner}/{repo_name}").get_releases()
+    repo = g.get_repo(f"{owner}/{repo_name}")
+    newer_releases = [
+        r
+        for r in repo.get_releases()
+        if r.published_at > repo.get_release(sm.tag_name).published_at
     ]
-    current_release_published_at = next(
-        (r.published_at for r in origin_releases if r.commit_hash == sm.hash),
-        None,
-    )
-    if current_release_published_at is None:
-        logger.error("current commit hash not found in releases.")
-        return []
-    return [r for r in origin_releases if r.published_at > current_release_published_at]
-
-
-def find_issue(repo: Repository, title: str, label: str, username: str):
-    issues = repo.get_issues(
-        state="open", labels=[label], sort="created", direction="desc"
-    )
-    for issue in issues:
-        if issue.title == title and issue.user.login == username:
-            return issue
-    return None
+    for r in newer_releases:
+        logger.debug(f"checking release {r.tag_name} published at {r.published_at}...")
+        tag_name = r.tag_name
+        hash = repo.get_git_ref(f"tags/{tag_name}").object.sha
+        yield Release(
+            tag_name=tag_name,
+            version=get_version(repo, hash),
+            commit_hash=hash,
+            published_at=r.published_at,
+        )
 
 
 def main():
@@ -117,49 +123,16 @@ def main():
         logger.info(f"Checking {sm.path} ({sm.url})...")
         logger.info(f"current: {sm.hash}")
 
-        newer_releases = get_newer_releases(sm, g)
+        newer_releases = sorted(get_newer_releases(sm, g), key=lambda r: r.published_at)
         if newer_releases:
             logger.success("newer releases:")
             for r in newer_releases:
-                logger.info(f"- {r.tag_name} (published at {r.published_at})")
+                logger.info(
+                    f"- {r.version} ({r.tag_name} published at {r.published_at})"
+                )
+            print(f"next_release={newer_releases[0].version}")
         else:
             logger.success("no newer releases.")
-
-    # create or update GitHub issue with the results
-    this_repo: Repository = g.get_repo(THIS_REPO)
-
-    logger.info("Setting up GitHub issue...")
-    issue_title = "Submodule Update Check"
-    labels = ["dependencies", "submodules"]
-    issue_body = "## Submodule Update List\n\n" + "\n".join(
-        f"- **{sm.path}**: {sm.url}\n  - current: {sm.hash}\n  - newer releases:\n    "
-        + "\n    ".join(
-            f"- {r.tag_name} ({r.commit_hash}) (published at {r.published_at})"
-            for r in newer_releases
-        )
-        if newer_releases
-        else "- no newer releases."
-        for sm in submodules()
-    )
-    existing_issue = find_issue(
-        this_repo, issue_title, "dependencies", "github-actions[bot]"
-    )
-    if existing_issue:
-        logger.info("Updating existing issue...")
-        if ASSIGNEES is not None:
-            logger.info(f"Assigning issue to: {ASSIGNEES}")
-            existing_issue.edit(body=issue_body, assignees=ASSIGNEES)
-        else:
-            existing_issue.edit(body=issue_body)
-    else:
-        logger.info("Creating new issue...")
-        if ASSIGNEES is not None:
-            logger.info(f"Assigning issue to: {ASSIGNEES}")
-            this_repo.create_issue(
-                title=issue_title, labels=labels, body=issue_body, assignees=ASSIGNEES
-            )
-        else:
-            this_repo.create_issue(title=issue_title, labels=labels, body=issue_body)
 
 
 if __name__ == "__main__":
