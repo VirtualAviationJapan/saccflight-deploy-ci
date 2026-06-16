@@ -16,6 +16,7 @@ from loguru import logger
 ROOT = Path(__file__).resolve().parent
 GITMODULES = ROOT / ".gitmodules"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_OUTPUT = os.getenv("GITHUB_OUTPUT")
 
 
 @dataclass
@@ -36,33 +37,30 @@ class Release:
 
 
 def github_repo(url):
-    patterns = [
-        r"https://github\.com/([^/]+)/([^/.]+)(?:\.git)?",
-        r"git@github\.com:([^/]+)/([^/.]+)(?:\.git)?",
-        r"ssh://git@github\.com/([^/]+)/([^/.]+)(?:\.git)?",
-    ]
-    for pattern in patterns:
-        m = re.match(pattern, url)
-        if m:
-            return m.group(1), m.group(2)
-    raise RuntimeError(f"not a GitHub URL: {url}")
+    m = re.match(r"https://github\.com/([^/]+)/([^/.]+)(?:\.git)?", url)
+    if m:
+        return m.group(1), m.group(2)
+    raise ValueError(f"not a GitHub URL: {url}")
 
 
-def submodules():
+def get_submodule(name: str) -> Submodule:
     parser = configparser.ConfigParser()
     parser.read(GITMODULES)
-    for section in parser.sections():
-        name = section.split('"')[1]
-        path = parser.get(section, "path")
-        submodule_path = ROOT / path
-        url = parser.get(section, "url")
-        hash = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=submodule_path, text=True
-        ).strip()
-        tag_name = subprocess.check_output(
-            ["git", "describe", "--tags"], cwd=submodule_path, text=True
-        ).strip()
-        yield Submodule(name=name, path=path, url=url, hash=hash, tag_name=tag_name)
+    section = f'submodule "{name}"'
+    path = parser.get(section, "path")
+    submodule_path = ROOT / path
+    url = parser.get(section, "url")
+    hash = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=submodule_path, text=True
+    ).strip()
+    tag_name = subprocess.check_output(
+        ["git", "describe", "--tags"], cwd=submodule_path, text=True
+    ).strip()
+    
+    logger.info(f"Checking {path} ({url})...")
+    logger.info(f"current: {hash} ({tag_name})")
+
+    return Submodule(name=name, path=path, url=url, hash=hash, tag_name=tag_name)
 
 
 def get_version(repo: Repository, tag_hash: str):
@@ -119,20 +117,17 @@ def main():
     g = Github(auth=auth)
 
     ## Check each submodule for newer releases
-    for sm in submodules():
-        logger.info(f"Checking {sm.path} ({sm.url})...")
-        logger.info(f"current: {sm.hash}")
-
-        newer_releases = sorted(get_newer_releases(sm, g), key=lambda r: r.published_at)
-        if newer_releases:
-            logger.success("newer releases:")
-            for r in newer_releases:
-                logger.info(
-                    f"- {r.version} ({r.tag_name} published at {r.published_at})"
-                )
-            print(f"next_release={newer_releases[0].version}")
-        else:
-            logger.success("no newer releases.")
+    sm = get_submodule("Packages/io.github.sacchan-vrc.sacc-flight-and-vehicles")
+    newer_releases = sorted(get_newer_releases(sm, g), key=lambda r: r.published_at)
+    gh_output_text = "next_release="
+    if len(newer_releases) > 0:
+        gh_output_text+=f"{newer_releases[0].tag_name}\n"
+    else:
+        gh_output_text+="\n"
+    logger.info(gh_output_text)
+    if GITHUB_OUTPUT:
+        with open(GITHUB_OUTPUT, "a") as f:
+            f.write(gh_output_text)
 
 
 if __name__ == "__main__":
