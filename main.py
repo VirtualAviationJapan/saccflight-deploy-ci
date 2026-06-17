@@ -1,4 +1,8 @@
-import tempfile
+"""check update of the submodule 
+if any newer release is found, write the oldest newer release tag to GITHUB_OUTPUT like `next_release=X.Y.Z`
+otherwise write `next_release=` to GITHUB_OUTPUT
+"""
+
 import json
 from collections.abc import Iterator
 import os
@@ -56,38 +60,21 @@ def get_submodule(name: str) -> Submodule:
     tag_name = subprocess.check_output(
         ["git", "describe", "--tags"], cwd=submodule_path, text=True
     ).strip()
-    
+
     logger.info(f"Checking {path} ({url})...")
     logger.info(f"current: {hash} ({tag_name})")
 
     return Submodule(name=name, path=path, url=url, hash=hash, tag_name=tag_name)
 
 
-def get_version(repo: Repository, tag_hash: str):
-    # shallow clone the repo to a temporary directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        logger.info(f"cloning {repo.full_name} at {tag_hash}...")
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--branch",
-                tag_hash,
-                repo.clone_url,
-                tmpdir,
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # read version in package.json
-        with open(Path(tmpdir) / "package.json") as f:
-            package_json = json.load(f)
-            version = package_json["version"]
-            logger.debug(f"version in package.json: {version}")
-            return version
+def get_version(repo: Repository, ref: str):
+    content = repo.get_contents("package.json", ref=ref)
+    if isinstance(content, list):
+        raise RuntimeError("package.json resolved to a directory unexpectedly")
+    package_json = json.loads(content.decoded_content.decode("utf-8"))
+    version = package_json["version"]
+    logger.debug(f"version in package.json: {version}")
+    return version
 
 
 def get_newer_releases(sm: Submodule, g: Github) -> Iterator[Release]:
@@ -102,9 +89,14 @@ def get_newer_releases(sm: Submodule, g: Github) -> Iterator[Release]:
         logger.debug(f"checking release {r.tag_name} published at {r.published_at}...")
         tag_name = r.tag_name
         hash = repo.get_git_ref(f"tags/{tag_name}").object.sha
+        version = get_version(repo, ref=hash)
+        if version != tag_name:
+            raise ValueError(
+                f"version in package.json ({version}) does not match tag name ({tag_name})"
+            )
         yield Release(
             tag_name=tag_name,
-            version=get_version(repo, hash),
+            version=version,
             commit_hash=hash,
             published_at=r.published_at,
         )
@@ -121,9 +113,9 @@ def main():
     newer_releases = sorted(get_newer_releases(sm, g), key=lambda r: r.published_at)
     gh_output_text = "next_release="
     if len(newer_releases) > 0:
-        gh_output_text+=f"{newer_releases[0].tag_name}\n"
+        gh_output_text += f"{newer_releases[0].tag_name}\n"
     else:
-        gh_output_text+="\n"
+        gh_output_text += "\n"
     logger.info(gh_output_text)
     if GITHUB_OUTPUT:
         with open(GITHUB_OUTPUT, "a") as f:
