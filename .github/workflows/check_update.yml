@@ -1,0 +1,116 @@
+name: Check SaccFlight Update
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Release Please
+    types:
+      - completed
+  schedule:
+    - cron: '0 0 * * 6'
+
+permissions: {}
+
+env:
+  SUBMODULE_PATH: Packages/io.github.sacchan-vrc.sacc-flight-and-vehicles
+
+concurrency:
+  group: check-saccflight-update
+  cancel-in-progress: false
+
+jobs:
+  check-existing-prs:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
+    outputs:
+      blocked: ${{ steps.existing-prs.outputs.blocked }}
+    steps:
+      - name: Check existing automation PRs
+        id: existing-prs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          prs_json="$(gh pr list --state open --base master --limit 100 --json number,title,headRefName,labels)"
+          blocked_count="$(
+            jq '[.[] | select(
+              (.headRefName | startswith("update/saccflight-v")) or
+              (.headRefName | startswith("release-please--")) or
+              (any(.labels[]?; .name == "autorelease: pending"))
+            )] | length' <<<"${prs_json}"
+          )"
+
+          if [[ "${blocked_count}" != "0" ]]; then
+            echo "blocked=true" >> "${GITHUB_OUTPUT}"
+            echo "Existing update or release-please PR found. Skipping."
+          else
+            echo "blocked=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  check-update:
+    needs: check-existing-prs
+    if: needs.check-existing-prs.outputs.blocked == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Find next upstream release
+        id: next-release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: uv run main.py
+
+      - name: Update SaccFlight submodule
+        if: steps.next-release.outputs.next_release != ''
+        working-directory: ${{ env.SUBMODULE_PATH }}
+        env:
+          NEXT_TAG: ${{ steps.next-release.outputs.next_release }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags origin
+          git checkout "${NEXT_TAG}"
+
+      - name: Create update pull request
+        if: steps.next-release.outputs.next_release != ''
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          commit-message: |
+            chore: update SaccFlight to ${{ steps.next-release.outputs.next_release }}
+
+            Release-As: ${{ steps.next-release.outputs.next_release }}
+          title: "chore: update SaccFlight to ${{ steps.next-release.outputs.next_release }}"
+          body: |
+            Updates the SaccFlightAndVehicles submodule to upstream release ${{ steps.next-release.outputs.next_release }}.
+
+            This PR is created only when no SaccFlight update PR or release-please PR is already open.
+          branch: update/saccflight-${{ steps.next-release.outputs.next_release }}
+          base: master
+          delete-branch: true
