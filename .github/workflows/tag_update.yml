@@ -1,0 +1,91 @@
+name: Tag Submodule Update
+
+on:
+  push:
+    branches:
+      - master
+
+permissions: {}
+
+env:
+  SUBMODULE_PATH: Packages/io.github.sacchan-vrc.sacc-flight-and-vehicles
+
+concurrency:
+  group: tag-submodule-update-master
+  cancel-in-progress: false
+
+jobs:
+  tag-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Check whether the submodule changed
+        id: submodule-change
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${BEFORE_SHA}" =~ ^0+$ ]] || ! git diff --quiet "${BEFORE_SHA}" "${AFTER_SHA}" -- "${SUBMODULE_PATH}"; then
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Read and validate the submodule tag
+        if: steps.submodule-change.outputs.changed == 'true'
+        id: version
+        working-directory: ${{ env.SUBMODULE_PATH }}
+        run: |
+          set -euo pipefail
+
+          SUBMODULE_TAG="$(git describe --tags --exact-match HEAD)"
+          SEMVER_IDENTIFIER='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          SEMVER_PATTERN="^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-${SEMVER_IDENTIFIER}(\\.${SEMVER_IDENTIFIER})*)?(\\+[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+
+          if [[ ! "${SUBMODULE_TAG}" =~ ${SEMVER_PATTERN} ]]; then
+            echo "Submodule tag '${SUBMODULE_TAG}' is not a semantic version." >&2
+            exit 1
+          fi
+
+          echo "version=${SUBMODULE_TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Push release tag
+        if: steps.submodule-change.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_TAG="v${VERSION}"
+          if git show-ref --tags --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            EXISTING_SHA="$(git rev-list -n 1 "${RELEASE_TAG}")"
+            if [[ "${EXISTING_SHA}" != "${GITHUB_SHA}" ]]; then
+              echo "Tag ${RELEASE_TAG} already exists at ${EXISTING_SHA}, not ${GITHUB_SHA}." >&2
+              exit 1
+            fi
+
+            echo "Tag ${RELEASE_TAG} already points to ${GITHUB_SHA}; nothing to do."
+            exit 0
+          fi
+
+          git tag "${RELEASE_TAG}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${RELEASE_TAG}"

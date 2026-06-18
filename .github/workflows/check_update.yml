@@ -1,0 +1,65 @@
+name: Check SaccFlight Update
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions: {}
+
+env:
+  SUBMODULE_PATH: Packages/io.github.sacchan-vrc.sacc-flight-and-vehicles
+
+concurrency:
+  group: check-saccflight-update
+  cancel-in-progress: false
+
+jobs:
+  check-update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Find next upstream release
+        id: next-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run --locked main.py
+
+      - name: Update SaccFlight submodule
+        if: steps.next-release.outputs.next_release != ''
+        working-directory: ${{ env.SUBMODULE_PATH }}
+        env:
+          NEXT_TAG: ${{ steps.next-release.outputs.next_release }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags origin
+          git checkout "${NEXT_TAG}"
+
+      - name: Create update pull request
+        if: steps.next-release.outputs.next_release != ''
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ github.token }}
+          commit-message: "chore: update SaccFlight to ${{ steps.next-release.outputs.next_release }}"
+          title: "chore: update SaccFlight to ${{ steps.next-release.outputs.next_release }}"
+          body: |
+            Updates the SaccFlightAndVehicles submodule to upstream release ${{ steps.next-release.outputs.next_release }}.
+
+            This is the oldest upstream release newer than the submodule currently on `master`.
+          branch: update/saccflight-${{ steps.next-release.outputs.next_release }}
+          base: master
+          delete-branch: true
