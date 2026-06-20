@@ -82,10 +82,12 @@ def get_version(repo: Repository, ref: str):
 def get_newer_releases(sm: Submodule, g: Github) -> Iterator[Release]:
     owner, repo_name = github_repo(sm.url)
     repo = g.get_repo(f"{owner}/{repo_name}")
+    current_release = repo.get_release(sm.tag_name)
+    current_published_at = current_release.published_at
     newer_releases = [
         release
         for release in repo.get_releases()
-        if release.published_at > repo.get_release(sm.tag_name).published_at
+        if current_published_at and release.published_at and release.published_at > current_published_at
     ]
     for r in newer_releases:
         logger.debug(f"checking release {r.tag_name} published at {r.published_at}...")
