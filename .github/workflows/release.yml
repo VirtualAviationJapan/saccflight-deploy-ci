@@ -101,7 +101,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Checkout VPM Repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.0
         with:
           repository: 'VirtualAviationJapan/vpm'
           path: 'vpm-repo'
